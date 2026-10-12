@@ -1,0 +1,5 @@
+{
+  "name": "claude-mods",
+  "owner": { "name": "nuTTeLLo" },
+  "plugins": [{ "name": "vim-cursor", "source": "./vim-cursor" }]
+}

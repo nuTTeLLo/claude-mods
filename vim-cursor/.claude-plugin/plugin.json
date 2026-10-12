@@ -1,0 +1,7 @@
+{
+  "name": "vim-cursor",
+  "version": "0.1.0",
+  "description": "Block cursor in vim normal mode, thin bar in insert mode",
+  "author": { "name": "nuTTeLLo" },
+  "license": "MIT"
+}

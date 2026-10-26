@@ -15,11 +15,20 @@ export function parseRepos(text: string): Repo[] {
   return repos
 }
 
-/** The GitHub repo a remote URL points at, for HTTPS and SSH remotes alike. */
-export function repoOfRemote(url: string): Repo | null {
-  const [, owner, name] = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(url.trim()) ?? []
+/** The host and repo a remote URL names, for HTTPS, SSH and scp-style remotes alike. */
+export function parseRemote(url: string): { host: string; repo: Repo } | null {
+  const [, host, owner, name] =
+    /^(?:[\w+.-]+:\/\/)?(?:[^@/]+@)?([^:/\s]+)(?::\d+)?[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(url.trim()) ?? []
+  if (host === undefined || owner === undefined || name === undefined) return null
 
-  return owner === undefined || name === undefined ? null : { owner, name }
+  return { host: host.toLowerCase(), repo: { owner, name } }
+}
+
+/** The real host name in `ssh -G <alias>` output, so `git@github-work:...` counts as GitHub. */
+export function sshHostname(config: string): string | null {
+  const line = config.split('\n').find(one => one.startsWith('hostname '))
+
+  return line === undefined ? null : line.slice('hostname '.length).trim().toLowerCase()
 }
 
 export const PUSH = /\b(jj\s+git\s+push|git\s+push|gh\s+pr\s+(create|merge|ready|comment))\b/

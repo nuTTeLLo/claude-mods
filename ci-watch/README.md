@@ -27,7 +27,8 @@ From a shell: `claude plugin install ci-watch --marketplace nuTTeLLo/claude-mods
 One option, `repos`, set in `/config` or on the install screen:
 
 - **Blank (default)**: watches the repo the session runs in, read from its `origin`
-  remote (git, or jj outside a git checkout), on its default branch.
+  remote (git, or jj outside a git checkout), on its default branch. SSH host aliases
+  (`git@github-work:owner/name.git`) count when `ssh -G` resolves them to github.com.
 - **A list**: `owner/name` or `owner/name@branch`, separated by commas, e.g.
   `acme/web, acme/api@release`. A repo without `@branch` uses its default branch.
 

@@ -12,9 +12,10 @@ import {
   isPending,
   isShown,
   parse,
+  parseRemote,
   parseRepos,
   rabbitText,
-  repoOfRemote,
+  sshHostname,
 } from './watch'
 
 const TICK_MS = 15_000
@@ -36,6 +37,18 @@ let configured: Repo[] = []
 // What the last poll watched.
 let watched: Repo[] = []
 
+/** Whether a remote's host is github.com, directly or through an SSH config alias. */
+async function isGitHub($: EngineInterface, host: string): Promise<boolean> {
+  if (host === 'github.com') return true
+  try {
+    const ran = await $.process.run(['ssh', '-G', host])
+
+    return ran.exitCode === 0 && sshHostname(ran.stdout) === 'github.com'
+  } catch {
+    return false
+  }
+}
+
 /** The `origin` remote of the session's directory, from git or, outside a git checkout, jj. */
 async function currentRepo($: EngineInterface): Promise<Repo | null> {
   const asks = [
@@ -47,8 +60,8 @@ async function currentRepo($: EngineInterface): Promise<Repo | null> {
       const ran = await $.process.run(argv)
       if (ran.exitCode !== 0) continue
       const line = ran.stdout.split('\n').find(one => argv[0] === 'git' || one.startsWith('origin '))
-      const repo = repoOfRemote((line ?? '').replace(/^origin\s+/, ''))
-      if (repo !== null) return repo
+      const remote = parseRemote((line ?? '').replace(/^origin\s+/, ''))
+      if (remote !== null && (await isGitHub($, remote.host))) return remote.repo
     } catch {
       // Not installed: try the next one.
     }
@@ -113,12 +126,13 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'ci-watch' }, async $ => {
     const taken = await poll($)
+    // The command's output is already shown under its name, so no `ci-watch:` prefix here.
     const lines = taken.items.map(describe)
-    if (taken.error !== null) lines.unshift(`ci-watch: ${taken.error}`)
+    if (taken.error !== null) lines.unshift(taken.error)
 
-    if (watched.length === 0) lines.push('ci-watch: no GitHub repo here; set the repos option in /config to watch others.')
+    if (watched.length === 0) lines.push('no GitHub repo here; set the repos option in /config to watch others.')
 
-    return { text: lines.join('\n') || 'ci-watch: nothing to report.' }
+    return { text: lines.join('\n') || 'nothing to report.' }
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {

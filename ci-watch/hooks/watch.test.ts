@@ -76,7 +76,7 @@ test('keeps the last rows and says why when gh fails', OPTIONS, async ($, on) =>
   }))
 
   const ran = await $.command.run(CHECK)
-  expect(ran.text).toBe('ci-watch: gh: not logged in')
+  expect(ran.text).toBe('gh: not logged in')
 })
 
 test('watches the session repo from its origin remote, without CodeRabbit when it has none', async ($, on) => {
@@ -122,4 +122,40 @@ test('says how to configure it outside a GitHub repo', async ($, on) => {
 
   const ran = await $.command.run(CHECK)
   expect(ran.text).toContain('no GitHub repo here')
+})
+
+const EMPTY_REPO = JSON.stringify({ data: { r0: { ref: { name: 'main', target: roll([]) }, pullRequests: { nodes: [] } } } })
+
+test('follows an SSH config alias to github.com', async ($, on) => {
+  mock.clock(on)
+  let query = ''
+  on('process.run', (_$, e) => {
+    if (e.argv[0] === 'git') return ok('git@github-work:someone/tool.git\n')
+    if (e.argv[0] === 'ssh') {
+      expect(e.argv).toEqual(['ssh', '-G', 'github-work'])
+
+      return ok('user git\nhostname github.com\nport 22\n')
+    }
+    query = e.argv[4] ?? ''
+
+    return ok(EMPTY_REPO)
+  })
+
+  const ran = await $.command.run(CHECK)
+  expect(query).toContain('repository(owner: "someone", name: "tool")')
+  expect(ran.text).toBe('tool main  CI –')
+})
+
+test('ignores a remote whose host is not GitHub', async ($, on) => {
+  mock.clock(on)
+  on('process.run', (_$, e) => {
+    if (e.argv[0] === 'git') return ok('ssh://git@gitlab.example:2222/someone/tool.git\n')
+    if (e.argv[0] === 'ssh') return ok('hostname gitlab.example\n')
+    if (e.argv[0] === 'gh') throw new Error('should not query GitHub')
+
+    return { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+
+  const ran = await $.command.run(CHECK)
+  expect(ran.text).toBe('no GitHub repo here; set the repos option in /config to watch others.')
 })

@@ -1,0 +1,16 @@
+{
+  "name": "ci-watch",
+  "version": "0.2.0",
+  "description": "Shows CI and CodeRabbit review progress for your GitHub repos above the prompt, and toasts when they settle",
+  "author": { "name": "nuTTeLLo" },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "repos": {
+      "type": "string",
+      "title": "Repos",
+      "description": "Repos to watch, as owner/name or owner/name@branch, separated by commas. Blank watches the repo the session runs in, on its default branch.",
+      "default": ""
+    }
+  }
+}

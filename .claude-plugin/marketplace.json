@@ -1,5 +1,8 @@
 {
   "name": "claude-mods",
   "owner": { "name": "nuTTeLLo" },
-  "plugins": [{ "name": "vim-cursor", "source": "./vim-cursor" }]
+  "plugins": [
+    { "name": "vim-cursor", "source": "./vim-cursor" },
+    { "name": "ci-watch", "source": "./ci-watch" }
+  ]
 }

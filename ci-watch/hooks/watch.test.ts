@@ -6,6 +6,7 @@ const CHECK = {
   origin: { kind: 'composer' },
   presentation: { isFullscreen: false, columns: 120 },
 } as const
+const LIST = { ...CHECK, args: 'list' } as const
 
 const roll = (nodes: unknown[]) => ({ oid: 'abc', statusCheckRollup: { contexts: { nodes } } })
 const run = (status: string, conclusion: string | null) => ({ __typename: 'CheckRun', name: 'build', status, conclusion })
@@ -55,13 +56,13 @@ test('reports CI and CodeRabbit progress, then toasts when they settle', OPTIONS
     return next(e)
   })
 
-  const first = await $.command.run(CHECK)
+  const first = await $.command.run(LIST)
   expect(first.text).toContain('web #17 feature  CI ░░░░░░░░░░ 0/1  CodeRabbit ● reviewing')
   expect(first.text).toContain('api release  CI ░░░░░░░░░░ 0/1')
   expect(toasts).toEqual([])
 
   body = answer([run('COMPLETED', 'FAILURE'), rabbit('SUCCESS')], [thread(false), thread(true)])
-  const second = await $.command.run(CHECK)
+  const second = await $.command.run(LIST)
   expect(second.text).toContain('web #17 feature  CI ██████████ 1/1 ✗ build  CodeRabbit ✓ 1 open')
   expect(toasts).toEqual([
     'web #17 feature: CI failed (build)',
@@ -108,7 +109,7 @@ test('watches the session repo from its origin remote, without CodeRabbit when i
     )
   })
 
-  const ran = await $.command.run(CHECK)
+  const ran = await $.command.run(LIST)
   expect(query).toContain('repository(owner: "someone", name: "tool")')
   expect(query).toContain('ref: defaultBranchRef')
   expect(ran.text).toBe('tool #3 fix  CI ██████████ 1/1 ✓\ntool trunk  CI –')
@@ -141,7 +142,7 @@ test('follows an SSH config alias to github.com', async ($, on) => {
     return ok(EMPTY_REPO)
   })
 
-  const ran = await $.command.run(CHECK)
+  const ran = await $.command.run(LIST)
   expect(query).toContain('repository(owner: "someone", name: "tool")')
   expect(ran.text).toBe('tool main  CI –')
 })
@@ -158,4 +159,25 @@ test('ignores a remote whose host is not GitHub', async ($, on) => {
 
   const ran = await $.command.run(CHECK)
   expect(ran.text).toBe('no GitHub repo here; set the repos option in /config to watch others.')
+})
+
+test('answers in one line without arguments, and switches modes', OPTIONS, async ($, on) => {
+  const clock = mock.clock(on)
+  let polls = 0
+  on('process.run', () => {
+    polls += 1
+
+    return ok(JSON.stringify(answer([run('COMPLETED', 'SUCCESS'), rabbit('SUCCESS')], [])))
+  })
+
+  const ran = await $.command.run(CHECK)
+  expect(ran.text).toBe('2 watched, 1 running · band auto')
+
+  expect((await $.command.run({ ...CHECK, args: 'off' })).text).toContain('polling stopped')
+  const before = polls
+  await clock.advance(10 * 60_000)
+  expect(polls).toBe(before)
+
+  expect((await $.command.run({ ...CHECK, args: 'on' })).text).toBe('band shows every row.')
+  expect((await $.command.run({ ...CHECK, args: 'nope' })).text).toContain('usage: /ci-watch')
 })

@@ -25,8 +25,11 @@ export type Snapshot = {
   checkedAt: number
 }
 
+/** `auto` shows only rows that need attention, `on` every row, `off` nothing and stops polling. */
+export type Mode = 'auto' | 'on' | 'off'
+
 declare module 'claude-code' {
   interface PluginState {
-    'ci-watch': { snapshot: Snapshot }
+    'ci-watch': { snapshot: Snapshot; mode: Mode }
   }
 }

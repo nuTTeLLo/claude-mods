@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Item, Snapshot } from '../types'
+import type { Item, Mode, Snapshot } from '../types'
 import type { Repo } from './watch'
 import {
   PUSH,
@@ -11,11 +11,13 @@ import {
   describe,
   isPending,
   isShown,
+  needsAttention,
   parse,
   parseRemote,
   parseRepos,
   rabbitText,
   sshHostname,
+  summary,
 } from './watch'
 
 const TICK_MS = 15_000
@@ -26,6 +28,10 @@ const HOT_MS = 10 * 60_000
 
 const EMPTY: Snapshot = { items: [], error: null, checkedAt: 0 }
 const snapshot = atom({ plugin: 'ci-watch', key: 'snapshot' } as const, EMPTY)
+const mode = atom({ plugin: 'ci-watch', key: 'mode' } as const, 'auto' as Mode)
+const MODES: readonly string[] = ['auto', 'on', 'off'] satisfies Mode[]
+
+const USAGE = 'usage: /ci-watch [list | auto | on | off]'
 
 const COLORS = { none: undefined, pending: 'yellow', pass: 'green', fail: 'red' } as const
 
@@ -101,7 +107,7 @@ async function poll($: EngineInterface): Promise<Snapshot> {
 }
 
 async function tick($: EngineInterface): Promise<void> {
-  if (isPolling || (await $.clock.now()) < nextAt) return
+  if (isPolling || (await read($, mode)) === 'off' || (await $.clock.now()) < nextAt) return
   isPolling = true
   try {
     await poll($)
@@ -116,7 +122,7 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'ci-watch',
-      description: 'Check CI and CodeRabbit progress on the watched repos now',
+      description: 'Check CI and CodeRabbit progress now; `list` prints every row, `auto`/`on`/`off` sets the band',
     })
     $.clock.every(TICK_MS, () => void tick($))
     void tick($)
@@ -124,10 +130,23 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'ci-watch' }, async $ => {
+  on('command.run', { command: 'ci-watch' }, async ($, e) => {
+    const arg = e.args.trim().toLowerCase()
+    if (MODES.includes(arg)) {
+      const chosen = arg as Mode
+      await update($, mode, () => chosen)
+      if (chosen === 'off') return { text: 'band off, polling stopped; /ci-watch auto turns it back on.' }
+      nextAt = 0
+      await tick($)
+
+      return { text: chosen === 'on' ? 'band shows every row.' : 'band shows only rows that need attention.' }
+    }
+    if (arg !== '' && arg !== 'list') return { text: USAGE }
+
     const taken = await poll($)
     // The command's output is already shown under its name, so no `ci-watch:` prefix here.
-    const lines = taken.items.map(describe)
+    const lines = arg === 'list' ? taken.items.map(describe) : []
+    if (arg === '' && taken.items.length > 0) lines.push(`${summary(taken.items)} · band ${await read($, mode)}`)
     if (taken.error !== null) lines.unshift(taken.error)
 
     if (watched.length === 0) lines.push('no GitHub repo here; set the repos option in /config to watch others.')
@@ -148,9 +167,10 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const chosen = await read($, mode)
     const taken = await read($, snapshot)
-    const rows = taken.items.filter(isShown)
-    if (e.props.hasSurvey || (rows.length === 0 && taken.error === null)) {
+    const rows = taken.items.filter(isShown).filter(item => chosen === 'on' || needsAttention(item))
+    if (chosen === 'off' || e.props.hasSurvey || (rows.length === 0 && taken.error === null)) {
       return next(e)
     }
 

@@ -172,6 +172,27 @@ export function isShown(item: Item): boolean {
   return item.isPr || item.ci === 'pending' || item.ci === 'fail'
 }
 
+/** A row that needs attention: still running, failed, or with CodeRabbit comments open. */
+export function needsAttention(item: Item): boolean {
+  return isPending(item) || item.ci === 'fail' || item.rabbit === 'fail' || item.threads > 0
+}
+
+/** One line counting the rows, for `/ci-watch` without arguments. */
+export function summary(items: readonly Item[]): string {
+  const shown = items.filter(isShown)
+  if (shown.length === 0) return 'nothing open'
+  const failing = shown.filter(item => item.ci === 'fail' || item.rabbit === 'fail').length
+  const running = shown.filter(isPending).length
+  const comments = shown.filter(item => item.threads > 0).length
+  const parts = [`${shown.length} watched`]
+  if (running > 0) parts.push(`${running} running`)
+  if (failing > 0) parts.push(`${failing} failing`)
+  if (comments > 0) parts.push(`${comments} with comments`)
+  if (running + failing + comments === 0) parts.push('all green')
+
+  return parts.join(', ')
+}
+
 const BAR_CELLS = 10
 
 export function bar(done: number, total: number): string {

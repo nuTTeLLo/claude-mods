@@ -34,8 +34,13 @@ One option, `repos`, set in `/config` or on the install screen:
 
 ## What it shows
 
-- **Band above the prompt**: one row per open PR, plus a row for the watched branch while
-  its build is running or has failed. Empty when everything is green and no PR is open.
+- **Band above the prompt**, in one of three modes set with `/ci-watch auto|on|off`
+  (per session, `auto` to start):
+  - `auto`: only rows that need you: CI running or failed, CodeRabbit still reviewing,
+    or review comments open. Gone once everything is green.
+  - `on`: one row per open PR, plus a row for the watched branch while its build is
+    running or has failed.
+  - `off`: no band, no polling, no toasts, until you switch it back on.
 - **CI**: a 10-cell bar and `finished/total` checks on the latest commit; `✓` when all
   passed, `✗ <check names>` on failure. Yellow pending, green pass, red fail.
 - **CodeRabbit** (PR rows, only in repos that use it): `waiting`, `reviewing`, or
@@ -43,7 +48,8 @@ One option, `repos`, set in `/config` or on the install screen:
   using CodeRabbit when the watched branch has a `.coderabbit.yaml` (or `.yml`), or a
   PR already carries a CodeRabbit status.
 - **Toasts**: CI passed/failed, CodeRabbit finished its review.
-- **`/ci-watch`**: polls now and prints every row, green branches included.
+- **`/ci-watch`**: polls now and prints one summary line (`9 watched, 1 running · band auto`).
+- **`/ci-watch list`**: polls now and prints every row, green branches included.
 
 ## Polling
 

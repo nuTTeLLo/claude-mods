@@ -1,6 +1,6 @@
 {
   "name": "ci-watch",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Shows CI and CodeRabbit review progress for your GitHub repos above the prompt, and toasts when they settle",
   "author": { "name": "nuTTeLLo" },
   "license": "MIT",

@@ -44,8 +44,8 @@ Two options, set in `/config` or on the install screen.
   (per session, `auto` to start):
   - `auto`: only rows that need you: CI running or failed, CodeRabbit still reviewing,
     or review comments open. Gone once everything is green.
-  - `on`: one row per open PR and per PR merged lately, plus a row for the watched
-    branch while its build is running or has failed.
+  - `on`: every row: each open PR, each PR merged lately, and the watched branch,
+    green or not.
   - `off`: no band, no polling, no toasts, until you switch it back on.
 - **CI**: a 10-cell bar and `finished/total` checks on the latest commit; `✓` when all
   passed, `✗ <check names>` on failure. Yellow pending, green pass, red fail.
@@ -54,12 +54,12 @@ Two options, set in `/config` or on the install screen.
   using CodeRabbit when the watched branch has a `.coderabbit.yaml` (or `.yml`), or a
   PR already carries a CodeRabbit status.
 - **Deploy** (merged PR rows, only in repos that record deployments): for each PR
-  merged into the watched branch in the last day, `queued`, `running`, `✗`, or
+  merged into the watched branch in the last day (up to the 20 most recent), `queued`, `running`, `✗`, or
   `deployed to <environment> <day> <time> ✓` in the machine's time zone. A PR counts as
   deployed once a deploy that started after its merge, on its merge commit or a later
   one, succeeds, so a cancelled run superseded by a newer one still counts. For deploys
   made by GitHub Actions the run's own status decides, not its jobs' deployment records,
-  which settle one by one. A deployed row stays for an hour; a merge no deploy picks up
+  which settle one by one. A deployed row stays for the rest of the day (under `on` and in `list`); a merge no deploy picks up
   within 30 minutes is dropped. Repos whose deploys don't report to GitHub (pull-based
   deploys, manual scripts) show no deploy rows.
 - **Toasts**: CI passed/failed, CodeRabbit finished its review, a merged PR deployed

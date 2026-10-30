@@ -33,13 +33,15 @@ export function parseEnvironment(text) {
     const env = text.trim();
     return /^[\w .-]+$/.test(env) ? env : null;
 }
-// Enough attempts to cover a busy day of merges, at a few records per deploy.
-const DEPLOY_RECORDS = 50;
+// Enough merges for a busy morning's burst, and attempts to cover them at a few records per
+// deploy (100 is GitHub's page limit).
+const MERGED_PULLS = 20;
+const DEPLOY_RECORDS = 100;
 function deployQuery(env) {
     if (env === null)
         return '';
     return `
-  merged: pullRequests(states: MERGED, first: 5, orderBy: { field: UPDATED_AT, direction: DESC }) { nodes {
+  merged: pullRequests(states: MERGED, first: ${MERGED_PULLS}, orderBy: { field: UPDATED_AT, direction: DESC }) { nodes {
     number headRefName baseRefName url mergedAt mergeCommit { oid }
   } }
   deployments(environments: ["${env}"], first: ${DEPLOY_RECORDS}, orderBy: { field: CREATED_AT, direction: DESC }) { nodes {
@@ -197,6 +199,12 @@ export function needsAttention(item) {
     if (item.merged !== undefined)
         return item.merged.deploy.state !== 'done';
     return isPending(item) || item.ci === 'fail' || item.rabbit === 'fail' || item.threads > 0;
+}
+/** The band's rows: every one under `on`, those that need attention under `auto`. */
+export function bandRows(items, mode) {
+    if (mode === 'off')
+        return [];
+    return mode === 'on' ? [...items] : items.filter(isShown).filter(needsAttention);
 }
 /** One line counting the rows, for `/ci-watch` without arguments. */
 export function summary(items) {

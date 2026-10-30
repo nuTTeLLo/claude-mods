@@ -1,5 +1,15 @@
 import { expect, mock, test } from 'claude-code/testing';
-import { formatTime } from './deploy';
+import { formatTime, isSameDay } from './deploy';
+import { bandRows, mergedItem } from './watch';
+const merged = (number) => ({
+    repo: { owner: 'acme', name: 'web' },
+    number,
+    label: `#${number} fix-${number}`,
+    url: `https://example.test/${number}`,
+    oid: `m${number}`,
+    at: '2026-10-30T02:00:00Z',
+    attempts: [],
+});
 const LIST = {
     command: 'ci-watch',
     args: 'list',
@@ -102,19 +112,44 @@ test('shows a failed deploy and toasts its log', OPTIONS, async ($, on) => {
     expect(ran.text).toContain('web #506 fix-506  merged  deploy to production ✗');
     expect(toasts).toEqual(['web #506 fix-506: deploy to production ✗ https://github.com/acme/web/actions/runs/300/job/3001']);
 });
-test('queues a fresh merge, and drops PRs deployed long ago or in repos with no deployments', OPTIONS, async ($, on) => {
+test('queues a fresh merge, and drops PRs deployed before today or in repos with no deployments', OPTIONS, async ($, on) => {
     mock.clock(on, { now: NOW });
-    let deployments = [job(400, 'old', '2026-10-30T00:00:00Z', 'SUCCESS')];
+    // The 29th wherever NOW is still the 30th (UTC-3 to UTC+14).
+    let deployments = [job(400, 'old', '2026-10-29T06:00:00Z', 'SUCCESS')];
     on('process.run', (_$, e) => {
         if (e.argv[2] === 'graphql') {
-            return ok(JSON.stringify(answer([pull(510, 'm510', '2026-10-30T03:34:00Z'), pull(490, 'old', '2026-10-29T23:59:00Z')], deployments)));
+            expect(e.argv[4]).toContain('merged: pullRequests(states: MERGED, first: 20');
+            return ok(JSON.stringify(answer([pull(510, 'm510', '2026-10-30T03:34:00Z'), pull(490, 'old', '2026-10-29T05:59:00Z')], deployments)));
         }
-        return ok(JSON.stringify(run('completed', 'success', '2026-10-30T00:06:00Z')));
+        return ok(JSON.stringify(run('completed', 'success', '2026-10-29T06:06:00Z')));
     });
     const ran = await $.command.run(LIST);
     expect(ran.text).toBe('web #510 fix-510  merged  deploy to production ● queued\nweb main  CI –');
     deployments = [];
     expect((await $.command.run(LIST)).text).toBe('web main  CI –');
+});
+test('keeps a PR deployed hours ago today', OPTIONS, async ($, on) => {
+    // Mid-day UTC, so the deploy six hours earlier is the same day in most time zones.
+    const now = Date.parse('2026-10-30T12:00:00Z');
+    mock.clock(on, { now });
+    on('process.run', (_$, e) => {
+        if (e.argv[2] === 'graphql') {
+            return ok(JSON.stringify(answer([pull(520, 'm520', '2026-10-30T06:00:00Z')], [job(500, 'm520', '2026-10-30T06:00:05Z', 'SUCCESS')])));
+        }
+        return ok(JSON.stringify(run('completed', 'success', '2026-10-30T06:06:00Z')));
+    });
+    const ran = await $.command.run(LIST);
+    const isToday = isSameDay('2026-10-30T06:06:00Z', now);
+    expect((ran.text ?? '').includes('web #520 fix-520  merged  deployed to production')).toBe(isToday);
+});
+test('the band shows every row under on, and only what needs attention under auto', () => {
+    const branch = { ...mergedItem(merged(1), { state: 'done', env: 'production' }), id: 'web@main', label: 'main', isPr: false, merged: undefined, ci: 'pass' };
+    const done = mergedItem(merged(2), { state: 'done', env: 'production', at: '2026-10-30T03:00:00Z' });
+    const running = mergedItem(merged(3), { state: 'running', env: 'production' });
+    const items = [done, running, branch];
+    expect(bandRows(items, 'on')).toEqual(items);
+    expect(bandRows(items, 'auto')).toEqual([running]);
+    expect(bandRows(items, 'off')).toEqual([]);
 });
 test('leaves deploys out of the query when the environment option is blank', { options: { repos: 'acme/web', environment: '' } }, async ($, on) => {
     mock.clock(on, { now: NOW });

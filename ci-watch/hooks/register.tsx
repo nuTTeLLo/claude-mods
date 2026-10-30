@@ -3,18 +3,17 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Deploy, Item, Mode, Snapshot } from '../types'
 import type { Lookups, RunStatus } from './deploy'
-import { deployOf, deployText } from './deploy'
+import { deployOf, deployText, isSameDay } from './deploy'
 import type { Merged, Repo } from './watch'
 import {
   PUSH,
+  bandRows,
   buildQuery,
   changes,
   ciText,
   describe,
   isPending,
-  isShown,
   mergedItem,
-  needsAttention,
   parse,
   parseEnvironment,
   parseMerged,
@@ -43,8 +42,6 @@ const DEPLOY_COLORS = { queued: 'yellow', running: 'yellow', done: 'green', fail
 
 // A merged PR whose deploy never starts (the workflow skipped it, say) stops being followed.
 const QUEUED_MS = 30 * 60_000
-// How long a deployed PR's row stays, for `/ci-watch on` and `list`.
-const DEPLOYED_MS = 60 * 60_000
 const MERGED_MS = 24 * 60 * 60_000
 
 let nextAt = 0
@@ -115,7 +112,8 @@ async function mergedItems($: EngineInterface, pulls: readonly Merged[], now: nu
     let deploy: Deploy | null = await deployOf(pull.oid, pull.at, pull.attempts, environment, lookups($, pull.repo))
     if (deploy === null && age < QUEUED_MS) deploy = { state: 'queued', env: environment }
     if (deploy === null) continue
-    if (deploy.state === 'done' && !(now - Date.parse(deploy.at ?? '') < DEPLOYED_MS)) continue
+    // A deployed PR's row stays for the rest of the day, for `/ci-watch on` and `list`.
+    if (deploy.state === 'done' && !isSameDay(deploy.at ?? '', now)) continue
     items.push(mergedItem(pull, deploy))
   }
 
@@ -255,7 +253,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const chosen = await read($, mode)
     const taken = await read($, snapshot)
-    const rows = taken.items.filter(isShown).filter(item => chosen === 'on' || needsAttention(item))
+    const rows = bandRows(taken.items, chosen)
     if (chosen === 'off' || e.props.hasSurvey || (rows.length === 0 && taken.error === null)) {
       return next(e)
     }

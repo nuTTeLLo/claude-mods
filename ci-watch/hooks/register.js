@@ -1,6 +1,6 @@
 import { atom, read, update } from 'claude-code';
-import { deployOf, deployText } from './deploy';
-import { PUSH, buildQuery, changes, ciText, describe, isPending, isShown, mergedItem, needsAttention, parse, parseEnvironment, parseMerged, parseRemote, parseRepos, rabbitText, sshHostname, summary, } from './watch';
+import { deployOf, deployText, isSameDay } from './deploy';
+import { PUSH, bandRows, buildQuery, changes, ciText, describe, isPending, mergedItem, parse, parseEnvironment, parseMerged, parseRemote, parseRepos, rabbitText, sshHostname, summary, } from './watch';
 const TICK_MS = 15_000;
 const ACTIVE_MS = 20_000;
 const IDLE_MS = 5 * 60_000;
@@ -15,8 +15,6 @@ const COLORS = { none: undefined, pending: 'yellow', pass: 'green', fail: 'red' 
 const DEPLOY_COLORS = { queued: 'yellow', running: 'yellow', done: 'green', fail: 'red' };
 // A merged PR whose deploy never starts (the workflow skipped it, say) stops being followed.
 const QUEUED_MS = 30 * 60_000;
-// How long a deployed PR's row stays, for `/ci-watch on` and `list`.
-const DEPLOYED_MS = 60 * 60_000;
 const MERGED_MS = 24 * 60 * 60_000;
 let nextAt = 0;
 let hotUntil = 0;
@@ -84,7 +82,8 @@ async function mergedItems($, pulls, now) {
             deploy = { state: 'queued', env: environment };
         if (deploy === null)
             continue;
-        if (deploy.state === 'done' && !(now - Date.parse(deploy.at ?? '') < DEPLOYED_MS))
+        // A deployed PR's row stays for the rest of the day, for `/ci-watch on` and `list`.
+        if (deploy.state === 'done' && !isSameDay(deploy.at ?? '', now))
             continue;
         items.push(mergedItem(pull, deploy));
     }
@@ -219,7 +218,7 @@ export const register = (on, options) => {
     on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
         const chosen = await read($, mode);
         const taken = await read($, snapshot);
-        const rows = taken.items.filter(isShown).filter(item => chosen === 'on' || needsAttention(item));
+        const rows = bandRows(taken.items, chosen);
         if (chosen === 'off' || e.props.hasSurvey || (rows.length === 0 && taken.error === null)) {
             return next(e);
         }

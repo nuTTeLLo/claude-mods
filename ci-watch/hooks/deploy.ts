@@ -121,6 +121,13 @@ export async function deployOf(
   return going
 }
 
+/** Whether an ISO time falls on the same day as `now`, in the machine's own time zone. */
+export function isSameDay(iso: string, now: number): boolean {
+  const date = new Date(iso)
+
+  return !Number.isNaN(date.getTime()) && date.toDateString() === new Date(now).toDateString()
+}
+
 /** A day-and-time in the machine's own time zone, e.g. `30 Oct 2:31 pm`. */
 export function formatTime(iso: string): string {
   const date = new Date(iso)

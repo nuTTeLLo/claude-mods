@@ -281,7 +281,7 @@ export const register: Register = (on, options) => {
       return next(e)
     }
 
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Link } = $.ui.resolve(e)
 
     return (
       <Box flexDirection="column">
@@ -289,7 +289,8 @@ export const register: Register = (on, options) => {
         {rows.map(item => (
           <Box>
             <Text dimColor>{item.repo} </Text>
-            <Text>{item.label}  </Text>
+            {/* An OSC 8 link on the terminal: the label shows, the URL opens on click. */}
+            <Text>{item.url === undefined ? item.label : <Link href={item.url}>{item.label}</Link>}  </Text>
             {item.merged !== undefined ? (
               <Text color={DEPLOY_COLORS[item.merged.deploy.state]}>merged  {deployText(item.merged.deploy)}</Text>
             ) : (

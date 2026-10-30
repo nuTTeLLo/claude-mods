@@ -252,6 +252,7 @@ export function parse(repos: readonly Repo[], data: Record<string, RepoData>): I
       repo: repo.name,
       label: base,
       isPr: false,
+      ...(base === '?' ? {} : { url: `https://github.com/${repo.owner}/${repo.name}/tree/${encodeURI(base)}` }),
       ...rollup(found.ref?.target),
       hasRabbit: false,
       threads: 0,

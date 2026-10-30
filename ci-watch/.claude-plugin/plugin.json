@@ -1,7 +1,7 @@
 {
   "name": "ci-watch",
-  "version": "0.4.0",
-  "description": "Shows CI and CodeRabbit review progress for your GitHub repos above the prompt, and toasts when they settle",
+  "version": "0.5.0",
+  "description": "Shows CI, CodeRabbit review and deploy progress for your GitHub repos above the prompt, and toasts when they settle",
   "author": { "name": "nuTTeLLo" },
   "license": "MIT",
   "types": "./types/index.d.ts",
@@ -11,6 +11,12 @@
       "title": "Repos",
       "description": "Repos to watch, as owner/name or owner/name@branch, separated by commas. Blank watches the repo the session runs in, on its default branch.",
       "default": ""
+    },
+    "environment": {
+      "type": "string",
+      "title": "Deploy environment",
+      "description": "GitHub deployment environment whose deploys merged PRs are followed to, e.g. production. Blank stops following deploys.",
+      "default": "production"
     }
   }
 }

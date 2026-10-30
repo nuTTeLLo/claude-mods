@@ -1,3 +1,4 @@
+import { attempts, deployText } from './deploy';
 /** Reads the `repos` option: `owner/name` or `owner/name@branch`, split by commas or spaces. */
 export function parseRepos(text) {
     const repos = [];
@@ -27,11 +28,29 @@ const ROLLUP = `oid statusCheckRollup { contexts(first: 100) { nodes {
   ... on CheckRun { name status conclusion }
   ... on StatusContext { context state }
 } } }`;
-export function buildQuery(repos) {
+/** The `environment` option, if it is a name GitHub allows; blank turns deploy tracking off. */
+export function parseEnvironment(text) {
+    const env = text.trim();
+    return /^[\w .-]+$/.test(env) ? env : null;
+}
+// Enough attempts to cover a busy day of merges, at a few records per deploy.
+const DEPLOY_RECORDS = 50;
+function deployQuery(env) {
+    if (env === null)
+        return '';
+    return `
+  merged: pullRequests(states: MERGED, first: 5, orderBy: { field: UPDATED_AT, direction: DESC }) { nodes {
+    number headRefName baseRefName url mergedAt mergeCommit { oid }
+  } }
+  deployments(environments: ["${env}"], first: ${DEPLOY_RECORDS}, orderBy: { field: CREATED_AT, direction: DESC }) { nodes {
+    commitOid createdAt latestStatus { state createdAt logUrl }
+  } }`;
+}
+export function buildQuery(repos, env = null) {
     const parts = repos.map((repo, i) => {
         // The branch watched decides whether CodeRabbit is configured.
         const tree = repo.base ?? 'HEAD';
-        return `r${i}: repository(owner: "${repo.owner}", name: "${repo.name}") {
+        return `r${i}: repository(owner: "${repo.owner}", name: "${repo.name}") {${deployQuery(env)}
   ${repo.base === undefined ? 'ref: defaultBranchRef' : `ref(qualifiedName: "refs/heads/${repo.base}")`} { name target { ... on Commit { ${ROLLUP} } } }
   rabbitYaml: object(expression: "${tree}:.coderabbit.yaml") { id }
   rabbitYml: object(expression: "${tree}:.coderabbit.yml") { id }
@@ -43,6 +62,53 @@ export function buildQuery(repos) {
 }`;
     });
     return `query {\n${parts.join('\n')}\n}`;
+}
+/** The PRs merged into each watched branch, in repos that have deployed to the environment. */
+export function parseMerged(repos, data) {
+    const found = [];
+    repos.forEach((repo, i) => {
+        const one = data[`r${i}`];
+        const records = one?.deployments?.nodes ?? [];
+        // No deployments recorded: nothing here tells GitHub when it ships.
+        if (one === null || one === undefined || records.length === 0)
+            return;
+        const base = one.ref?.name ?? repo.base;
+        const tried = attempts(records);
+        for (const pull of one.merged?.nodes ?? []) {
+            const oid = pull.mergeCommit?.oid;
+            if (pull.baseRefName !== base || oid === undefined || !pull.mergedAt)
+                continue;
+            found.push({
+                repo,
+                number: pull.number,
+                label: `#${pull.number} ${pull.headRefName}`,
+                url: pull.url,
+                oid,
+                at: pull.mergedAt,
+                attempts: tried,
+            });
+        }
+    });
+    return found;
+}
+/** A merged PR's row. */
+export function mergedItem(pull, deploy) {
+    return {
+        id: `${pull.repo.name}#${pull.number}`,
+        repo: pull.repo.name,
+        label: pull.label,
+        isPr: true,
+        url: pull.url,
+        sha: pull.oid,
+        ci: 'none',
+        ciDone: 0,
+        ciTotal: 0,
+        failed: [],
+        rabbit: 'none',
+        hasRabbit: false,
+        threads: 0,
+        merged: { oid: pull.oid, at: pull.at, deploy },
+    };
 }
 const PASSING = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
 const WAITING = new Set(['PENDING', 'EXPECTED']);
@@ -117,6 +183,8 @@ export function parse(repos, data) {
     return items;
 }
 export function isPending(item) {
+    if (item.merged !== undefined)
+        return item.merged.deploy.state === 'queued' || item.merged.deploy.state === 'running';
     // An open PR with no CodeRabbit status yet is still waiting for its review.
     return item.ci === 'pending' || item.rabbit === 'pending' || (item.hasRabbit && item.rabbit === 'none');
 }
@@ -126,6 +194,8 @@ export function isShown(item) {
 }
 /** A row that needs attention: still running, failed, or with CodeRabbit comments open. */
 export function needsAttention(item) {
+    if (item.merged !== undefined)
+        return item.merged.deploy.state !== 'done';
     return isPending(item) || item.ci === 'fail' || item.rabbit === 'fail' || item.threads > 0;
 }
 /** One line counting the rows, for `/ci-watch` without arguments. */
@@ -133,7 +203,7 @@ export function summary(items) {
     const shown = items.filter(isShown);
     if (shown.length === 0)
         return 'nothing open';
-    const failing = shown.filter(item => item.ci === 'fail' || item.rabbit === 'fail').length;
+    const failing = shown.filter(item => item.ci === 'fail' || item.rabbit === 'fail' || item.merged?.deploy.state === 'fail').length;
     const running = shown.filter(isPending).length;
     const comments = shown.filter(item => item.threads > 0).length;
     const parts = [`${shown.length} watched`];
@@ -173,6 +243,8 @@ export function rabbitText(item) {
     return item.rabbit === 'pending' ? 'CodeRabbit ● reviewing' : 'CodeRabbit ● waiting';
 }
 export function describe(item) {
+    if (item.merged !== undefined)
+        return `${item.repo} ${item.label}  merged  ${deployText(item.merged.deploy)}`;
     return [`${item.repo} ${item.label}`, ciText(item), rabbitText(item)].filter(Boolean).join('  ');
 }
 /** What changed for the same commit between two polls, as toast lines. */
@@ -180,9 +252,19 @@ export function changes(before, after) {
     const lines = [];
     for (const item of after) {
         const was = before.find(one => one.id === item.id);
+        const name = `${item.repo} ${item.label}`;
+        // A merged PR keeps its id from when it was open, so its deploy is followed across the merge.
+        if (was !== undefined && item.merged !== undefined) {
+            const { deploy } = item.merged;
+            const had = was.merged?.deploy.state;
+            if (had !== 'done' && deploy.state === 'done')
+                lines.push(`${name}: ${deployText(deploy)}`);
+            if (had !== 'fail' && deploy.state === 'fail')
+                lines.push(`${name}: ${deployText(deploy)} ${deploy.url ?? ''}`.trim());
+            continue;
+        }
         if (was === undefined || was.sha !== item.sha)
             continue;
-        const name = `${item.repo} ${item.label}`;
         if (was.ci === 'pending' && item.ci === 'pass')
             lines.push(`${name}: CI passed`);
         if (was.ci !== 'fail' && item.ci === 'fail')

@@ -1,16 +1,23 @@
 import { atom, read, update } from 'claude-code';
-import { PUSH, buildQuery, changes, ciText, describe, isPending, isShown, needsAttention, parse, parseRemote, parseRepos, rabbitText, sshHostname, summary, } from './watch';
-const TICK_MS = 15000;
-const ACTIVE_MS = 20000;
-const IDLE_MS = 5 * 60000;
+import { deployOf, deployText } from './deploy';
+import { PUSH, buildQuery, changes, ciText, describe, isPending, isShown, mergedItem, needsAttention, parse, parseEnvironment, parseMerged, parseRemote, parseRepos, rabbitText, sshHostname, summary, } from './watch';
+const TICK_MS = 15_000;
+const ACTIVE_MS = 20_000;
+const IDLE_MS = 5 * 60_000;
 // How long after a push to keep polling fast, while GitHub registers the checks.
-const HOT_MS = 10 * 60000;
+const HOT_MS = 10 * 60_000;
 const EMPTY = { items: [], error: null, checkedAt: 0 };
 const snapshot = atom({ plugin: 'ci-watch', key: 'snapshot' }, EMPTY);
 const mode = atom({ plugin: 'ci-watch', key: 'mode' }, 'auto');
 const MODES = ['auto', 'on', 'off'];
 const USAGE = 'usage: /ci-watch [list | auto | on | off]';
 const COLORS = { none: undefined, pending: 'yellow', pass: 'green', fail: 'red' };
+const DEPLOY_COLORS = { queued: 'yellow', running: 'yellow', done: 'green', fail: 'red' };
+// A merged PR whose deploy never starts (the workflow skipped it, say) stops being followed.
+const QUEUED_MS = 30 * 60_000;
+// How long a deployed PR's row stays, for `/ci-watch on` and `list`.
+const DEPLOYED_MS = 60 * 60_000;
+const MERGED_MS = 24 * 60 * 60_000;
 let nextAt = 0;
 let hotUntil = 0;
 let isPolling = false;
@@ -18,6 +25,71 @@ let isPolling = false;
 let configured = [];
 // What the last poll watched.
 let watched = [];
+// The `environment` option; null when deploys aren't followed.
+let environment = 'production';
+// Answers that can't change: whether a commit includes a merge, and runs that have finished.
+const included = new Map();
+const finished = new Map();
+async function ghJson($, path) {
+    const ran = await $.process.run(['gh', 'api', path]);
+    if (ran.exitCode !== 0)
+        throw new Error(ran.stderr.trim().split('\n')[0] || `gh exited ${ran.exitCode}`);
+    return JSON.parse(ran.stdout);
+}
+function lookups($, repo) {
+    const path = `repos/${repo.owner}/${repo.name}`;
+    return {
+        async includes(merge, commit) {
+            const key = `${path}:${merge}...${commit}`;
+            const known = included.get(key);
+            if (known !== undefined)
+                return known;
+            try {
+                const { status } = (await ghJson($, `${path}/compare/${merge}...${commit}`));
+                const answer = status === 'ahead' || status === 'identical';
+                included.set(key, answer);
+                return answer;
+            }
+            catch {
+                return false;
+            }
+        },
+        async run(id) {
+            const key = `${path}:${id}`;
+            const known = finished.get(key);
+            if (known !== undefined)
+                return known;
+            try {
+                const run = (await ghJson($, `${path}/actions/runs/${id}`));
+                const found = { status: run.status ?? '', conclusion: run.conclusion ?? null, updatedAt: run.updated_at ?? '' };
+                if (found.status === 'completed')
+                    finished.set(key, found);
+                return found;
+            }
+            catch {
+                return null;
+            }
+        },
+    };
+}
+/** Rows for the PRs merged lately, while their deploy is under way and for a while after. */
+async function mergedItems($, pulls, now) {
+    const items = [];
+    for (const pull of pulls) {
+        const age = now - Date.parse(pull.at);
+        if (environment === null || !(age < MERGED_MS))
+            continue;
+        let deploy = await deployOf(pull.oid, pull.at, pull.attempts, environment, lookups($, pull.repo));
+        if (deploy === null && age < QUEUED_MS)
+            deploy = { state: 'queued', env: environment };
+        if (deploy === null)
+            continue;
+        if (deploy.state === 'done' && !(now - Date.parse(deploy.at ?? '') < DEPLOYED_MS))
+            continue;
+        items.push(mergedItem(pull, deploy));
+    }
+    return items;
+}
 /** Whether a remote's host is github.com, directly or through an SSH config alias. */
 async function isGitHub($, host) {
     if (host === 'github.com')
@@ -61,9 +133,13 @@ async function poll($) {
         const repos = here === null ? configured : [here];
         watched = repos;
         if (repos.length > 0) {
-            const ran = await $.process.run(['gh', 'api', 'graphql', '-f', `query=${buildQuery(repos)}`]);
-            if (ran.exitCode === 0)
-                items = parse(repos, JSON.parse(ran.stdout).data ?? {});
+            const ran = await $.process.run(['gh', 'api', 'graphql', '-f', `query=${buildQuery(repos, environment)}`]);
+            if (ran.exitCode === 0) {
+                const data = JSON.parse(ran.stdout).data ?? {};
+                const merged = await mergedItems($, parseMerged(repos, data), now);
+                // Merged rows go before the branch row of their repo, after its open PRs.
+                items = parse(repos, data).flatMap(item => item.isPr ? [item] : [...merged.filter(one => one.repo === item.repo), item]);
+            }
             else
                 error = ran.stderr.trim().split('\n')[0] || `gh exited ${ran.exitCode}`;
         }
@@ -96,6 +172,7 @@ async function tick($) {
 }
 export const register = (on, options) => {
     configured = parseRepos(typeof options.repos === 'string' ? options.repos : '');
+    environment = parseEnvironment(typeof options.environment === 'string' ? options.environment : 'production');
     on('session.start', async ($, e, next) => {
         await $.command.register({
             name: 'ci-watch',
@@ -113,7 +190,7 @@ export const register = (on, options) => {
             if (chosen === 'off')
                 return { text: 'band off, polling stopped; /ci-watch auto turns it back on.' };
             nextAt = 0;
-            void tick($);
+            await tick($);
             return { text: chosen === 'on' ? 'band shows every row.' : 'band shows only rows that need attention.' };
         }
         if (arg !== '' && arg !== 'list')
@@ -135,7 +212,7 @@ export const register = (on, options) => {
             const now = await $.clock.now();
             hotUntil = now + HOT_MS;
             // GitHub needs a moment before the new commit's checks exist.
-            nextAt = now + 5000;
+            nextAt = now + 5_000;
         }
         return ran;
     });
@@ -147,17 +224,22 @@ export const register = (on, options) => {
             return next(e);
         }
         const { Box, Text } = $.ui.resolve(e);
-        return (<Box flexDirection="column">
-        {taken.error !== null && <Text color="red">ci-watch: {taken.error}</Text>}
-        {rows.map(item => (<Box>
-            <Text dimColor>{item.repo} </Text>
-            <Text>{item.label}  </Text>
-            <Text color={COLORS[item.ci]}>{ciText(item)}</Text>
-            {item.hasRabbit && (<Text color={item.rabbit === 'none' ? 'yellow' : COLORS[item.rabbit]}>
-                {'  '}
-                {rabbitText(item)}
-              </Text>)}
-          </Box>))}
-      </Box>);
+        return (h(Box, { flexDirection: "column" },
+            taken.error !== null && h(Text, { color: "red" },
+                "ci-watch: ",
+                taken.error),
+            rows.map(item => (h(Box, null,
+                h(Text, { dimColor: true },
+                    item.repo,
+                    " "),
+                h(Text, null,
+                    item.label,
+                    "  "),
+                item.merged !== undefined ? (h(Text, { color: DEPLOY_COLORS[item.merged.deploy.state] },
+                    "merged  ",
+                    deployText(item.merged.deploy))) : (h(Text, { color: COLORS[item.ci] }, ciText(item))),
+                item.hasRabbit && (h(Text, { color: item.rabbit === 'none' ? 'yellow' : COLORS[item.rabbit] },
+                    '  ',
+                    rabbitText(item))))))));
     });
 };

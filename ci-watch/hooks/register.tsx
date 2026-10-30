@@ -1,8 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Item, Mode, Snapshot } from '../types'
-import type { Repo } from './watch'
+import type { Deploy, Item, Mode, Snapshot } from '../types'
+import type { Lookups, RunStatus } from './deploy'
+import { deployOf, deployText } from './deploy'
+import type { Merged, Repo } from './watch'
 import {
   PUSH,
   buildQuery,
@@ -11,8 +13,11 @@ import {
   describe,
   isPending,
   isShown,
+  mergedItem,
   needsAttention,
   parse,
+  parseEnvironment,
+  parseMerged,
   parseRemote,
   parseRepos,
   rabbitText,
@@ -34,6 +39,13 @@ const MODES: readonly string[] = ['auto', 'on', 'off'] satisfies Mode[]
 const USAGE = 'usage: /ci-watch [list | auto | on | off]'
 
 const COLORS = { none: undefined, pending: 'yellow', pass: 'green', fail: 'red' } as const
+const DEPLOY_COLORS = { queued: 'yellow', running: 'yellow', done: 'green', fail: 'red' } as const
+
+// A merged PR whose deploy never starts (the workflow skipped it, say) stops being followed.
+const QUEUED_MS = 30 * 60_000
+// How long a deployed PR's row stays, for `/ci-watch on` and `list`.
+const DEPLOYED_MS = 60 * 60_000
+const MERGED_MS = 24 * 60 * 60_000
 
 let nextAt = 0
 let hotUntil = 0
@@ -42,6 +54,73 @@ let isPolling = false
 let configured: Repo[] = []
 // What the last poll watched.
 let watched: Repo[] = []
+// The `environment` option; null when deploys aren't followed.
+let environment: string | null = 'production'
+// Answers that can't change: whether a commit includes a merge, and runs that have finished.
+const included = new Map<string, boolean>()
+const finished = new Map<string, RunStatus>()
+
+async function ghJson($: EngineInterface, path: string): Promise<unknown> {
+  const ran = await $.process.run(['gh', 'api', path])
+  if (ran.exitCode !== 0) throw new Error(ran.stderr.trim().split('\n')[0] || `gh exited ${ran.exitCode}`)
+
+  return JSON.parse(ran.stdout)
+}
+
+function lookups($: EngineInterface, repo: Repo): Lookups {
+  const path = `repos/${repo.owner}/${repo.name}`
+
+  return {
+    async includes(merge, commit) {
+      const key = `${path}:${merge}...${commit}`
+      const known = included.get(key)
+      if (known !== undefined) return known
+      try {
+        const { status } = (await ghJson($, `${path}/compare/${merge}...${commit}`)) as { status?: string }
+        const answer = status === 'ahead' || status === 'identical'
+        included.set(key, answer)
+
+        return answer
+      } catch {
+        return false
+      }
+    },
+    async run(id) {
+      const key = `${path}:${id}`
+      const known = finished.get(key)
+      if (known !== undefined) return known
+      try {
+        const run = (await ghJson($, `${path}/actions/runs/${id}`)) as {
+          status?: string
+          conclusion?: string | null
+          updated_at?: string
+        }
+        const found = { status: run.status ?? '', conclusion: run.conclusion ?? null, updatedAt: run.updated_at ?? '' }
+        if (found.status === 'completed') finished.set(key, found)
+
+        return found
+      } catch {
+        return null
+      }
+    },
+  }
+}
+
+/** Rows for the PRs merged lately, while their deploy is under way and for a while after. */
+async function mergedItems($: EngineInterface, pulls: readonly Merged[], now: number): Promise<Item[]> {
+  const items: Item[] = []
+  for (const pull of pulls) {
+    const age = now - Date.parse(pull.at)
+    if (environment === null || !(age < MERGED_MS)) continue
+    let deploy: Deploy | null = await deployOf(pull.oid, pull.at, pull.attempts, environment, lookups($, pull.repo))
+    if (deploy === null && age < QUEUED_MS) deploy = { state: 'queued', env: environment }
+    if (deploy === null) continue
+    if (deploy.state === 'done' && !(now - Date.parse(deploy.at ?? '') < DEPLOYED_MS)) continue
+    items.push(mergedItem(pull, deploy))
+  }
+
+  return items
+}
 
 /** Whether a remote's host is github.com, directly or through an SSH config alias. */
 async function isGitHub($: EngineInterface, host: string): Promise<boolean> {
@@ -85,9 +164,15 @@ async function poll($: EngineInterface): Promise<Snapshot> {
     const repos = here === null ? configured : [here]
     watched = repos
     if (repos.length > 0) {
-      const ran = await $.process.run(['gh', 'api', 'graphql', '-f', `query=${buildQuery(repos)}`])
-      if (ran.exitCode === 0) items = parse(repos, JSON.parse(ran.stdout).data ?? {})
-      else error = ran.stderr.trim().split('\n')[0] || `gh exited ${ran.exitCode}`
+      const ran = await $.process.run(['gh', 'api', 'graphql', '-f', `query=${buildQuery(repos, environment)}`])
+      if (ran.exitCode === 0) {
+        const data = JSON.parse(ran.stdout).data ?? {}
+        const merged = await mergedItems($, parseMerged(repos, data), now)
+        // Merged rows go before the branch row of their repo, after its open PRs.
+        items = parse(repos, data).flatMap(item =>
+          item.isPr ? [item] : [...merged.filter(one => one.repo === item.repo), item],
+        )
+      } else error = ran.stderr.trim().split('\n')[0] || `gh exited ${ran.exitCode}`
     }
   } catch (thrown) {
     error = thrown instanceof Error ? thrown.message : String(thrown)
@@ -118,6 +203,7 @@ async function tick($: EngineInterface): Promise<void> {
 
 export const register: Register = (on, options) => {
   configured = parseRepos(typeof options.repos === 'string' ? options.repos : '')
+  environment = parseEnvironment(typeof options.environment === 'string' ? options.environment : 'production')
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -183,7 +269,11 @@ export const register: Register = (on, options) => {
           <Box>
             <Text dimColor>{item.repo} </Text>
             <Text>{item.label}  </Text>
-            <Text color={COLORS[item.ci]}>{ciText(item)}</Text>
+            {item.merged !== undefined ? (
+              <Text color={DEPLOY_COLORS[item.merged.deploy.state]}>merged  {deployText(item.merged.deploy)}</Text>
+            ) : (
+              <Text color={COLORS[item.ci]}>{ciText(item)}</Text>
+            )}
             {item.hasRabbit && (
               <Text color={item.rabbit === 'none' ? 'yellow' : COLORS[item.rabbit]}>
                 {'  '}

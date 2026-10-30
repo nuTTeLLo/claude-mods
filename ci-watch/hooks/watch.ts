@@ -1,4 +1,6 @@
-import type { Check, Item } from '../types'
+import type { Check, Deploy, Item } from '../types'
+import type { Attempt, DeployRecord } from './deploy'
+import { attempts, deployText } from './deploy'
 
 /** A repo to watch; with no `base`, its default branch. */
 export type Repo = { owner: string; name: string; base?: string }
@@ -39,12 +41,34 @@ const ROLLUP = `oid statusCheckRollup { contexts(first: 100) { nodes {
   ... on StatusContext { context state }
 } } }`
 
-export function buildQuery(repos: readonly Repo[]): string {
+/** The `environment` option, if it is a name GitHub allows; blank turns deploy tracking off. */
+export function parseEnvironment(text: string): string | null {
+  const env = text.trim()
+
+  return /^[\w .-]+$/.test(env) ? env : null
+}
+
+// Enough attempts to cover a busy day of merges, at a few records per deploy.
+const DEPLOY_RECORDS = 50
+
+function deployQuery(env: string | null): string {
+  if (env === null) return ''
+
+  return `
+  merged: pullRequests(states: MERGED, first: 5, orderBy: { field: UPDATED_AT, direction: DESC }) { nodes {
+    number headRefName baseRefName url mergedAt mergeCommit { oid }
+  } }
+  deployments(environments: ["${env}"], first: ${DEPLOY_RECORDS}, orderBy: { field: CREATED_AT, direction: DESC }) { nodes {
+    commitOid createdAt latestStatus { state createdAt logUrl }
+  } }`
+}
+
+export function buildQuery(repos: readonly Repo[], env: string | null = null): string {
   const parts = repos.map((repo, i) => {
     // The branch watched decides whether CodeRabbit is configured.
     const tree = repo.base ?? 'HEAD'
 
-    return `r${i}: repository(owner: "${repo.owner}", name: "${repo.name}") {
+    return `r${i}: repository(owner: "${repo.owner}", name: "${repo.name}") {${deployQuery(env)}
   ${repo.base === undefined ? 'ref: defaultBranchRef' : `ref(qualifiedName: "refs/heads/${repo.base}")`} { name target { ... on Commit { ${ROLLUP} } } }
   rabbitYaml: object(expression: "${tree}:.coderabbit.yaml") { id }
   rabbitYml: object(expression: "${tree}:.coderabbit.yml") { id }
@@ -77,12 +101,81 @@ type Pull = {
     nodes?: { isResolved: boolean; comments?: { nodes?: { author?: { login?: string } | null }[] } }[]
   }
 }
+type MergedPull = {
+  number: number
+  headRefName: string
+  baseRefName?: string
+  url: string
+  mergedAt?: string | null
+  mergeCommit?: { oid?: string } | null
+}
 type RepoData = {
   ref?: { name?: string; target?: Commit } | null
   rabbitYaml?: { id: string } | null
   rabbitYml?: { id: string } | null
   pullRequests?: { nodes?: Pull[] }
+  merged?: { nodes?: MergedPull[] }
+  deployments?: { nodes?: DeployRecord[] }
 } | null
+
+/** A PR merged into the watched branch, with the deploy attempts of the repo it is in. */
+export type Merged = {
+  repo: Repo
+  number: number
+  label: string
+  url: string
+  oid: string
+  at: string
+  attempts: Attempt[]
+}
+
+/** The PRs merged into each watched branch, in repos that have deployed to the environment. */
+export function parseMerged(repos: readonly Repo[], data: Record<string, RepoData>): Merged[] {
+  const found: Merged[] = []
+  repos.forEach((repo, i) => {
+    const one = data[`r${i}`]
+    const records = one?.deployments?.nodes ?? []
+    // No deployments recorded: nothing here tells GitHub when it ships.
+    if (one === null || one === undefined || records.length === 0) return
+    const base = one.ref?.name ?? repo.base
+    const tried = attempts(records)
+    for (const pull of one.merged?.nodes ?? []) {
+      const oid = pull.mergeCommit?.oid
+      if (pull.baseRefName !== base || oid === undefined || !pull.mergedAt) continue
+      found.push({
+        repo,
+        number: pull.number,
+        label: `#${pull.number} ${pull.headRefName}`,
+        url: pull.url,
+        oid,
+        at: pull.mergedAt,
+        attempts: tried,
+      })
+    }
+  })
+
+  return found
+}
+
+/** A merged PR's row. */
+export function mergedItem(pull: Merged, deploy: Deploy): Item {
+  return {
+    id: `${pull.repo.name}#${pull.number}`,
+    repo: pull.repo.name,
+    label: pull.label,
+    isPr: true,
+    url: pull.url,
+    sha: pull.oid,
+    ci: 'none',
+    ciDone: 0,
+    ciTotal: 0,
+    failed: [],
+    rabbit: 'none',
+    hasRabbit: false,
+    threads: 0,
+    merged: { oid: pull.oid, at: pull.at, deploy },
+  }
+}
 
 const PASSING = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED'])
 const WAITING = new Set(['PENDING', 'EXPECTED'])
@@ -163,6 +256,7 @@ export function parse(repos: readonly Repo[], data: Record<string, RepoData>): I
 }
 
 export function isPending(item: Item): boolean {
+  if (item.merged !== undefined) return item.merged.deploy.state === 'queued' || item.merged.deploy.state === 'running'
   // An open PR with no CodeRabbit status yet is still waiting for its review.
   return item.ci === 'pending' || item.rabbit === 'pending' || (item.hasRabbit && item.rabbit === 'none')
 }
@@ -174,6 +268,8 @@ export function isShown(item: Item): boolean {
 
 /** A row that needs attention: still running, failed, or with CodeRabbit comments open. */
 export function needsAttention(item: Item): boolean {
+  if (item.merged !== undefined) return item.merged.deploy.state !== 'done'
+
   return isPending(item) || item.ci === 'fail' || item.rabbit === 'fail' || item.threads > 0
 }
 
@@ -181,7 +277,9 @@ export function needsAttention(item: Item): boolean {
 export function summary(items: readonly Item[]): string {
   const shown = items.filter(isShown)
   if (shown.length === 0) return 'nothing open'
-  const failing = shown.filter(item => item.ci === 'fail' || item.rabbit === 'fail').length
+  const failing = shown.filter(
+    item => item.ci === 'fail' || item.rabbit === 'fail' || item.merged?.deploy.state === 'fail',
+  ).length
   const running = shown.filter(isPending).length
   const comments = shown.filter(item => item.threads > 0).length
   const parts = [`${shown.length} watched`]
@@ -220,6 +318,8 @@ export function rabbitText(item: Item): string {
 }
 
 export function describe(item: Item): string {
+  if (item.merged !== undefined) return `${item.repo} ${item.label}  merged  ${deployText(item.merged.deploy)}`
+
   return [`${item.repo} ${item.label}`, ciText(item), rabbitText(item)].filter(Boolean).join('  ')
 }
 
@@ -228,8 +328,16 @@ export function changes(before: readonly Item[], after: readonly Item[]): string
   const lines: string[] = []
   for (const item of after) {
     const was = before.find(one => one.id === item.id)
-    if (was === undefined || was.sha !== item.sha) continue
     const name = `${item.repo} ${item.label}`
+    // A merged PR keeps its id from when it was open, so its deploy is followed across the merge.
+    if (was !== undefined && item.merged !== undefined) {
+      const { deploy } = item.merged
+      const had = was.merged?.deploy.state
+      if (had !== 'done' && deploy.state === 'done') lines.push(`${name}: ${deployText(deploy)}`)
+      if (had !== 'fail' && deploy.state === 'fail') lines.push(`${name}: ${deployText(deploy)} ${deploy.url ?? ''}`.trim())
+      continue
+    }
+    if (was === undefined || was.sha !== item.sha) continue
     if (was.ci === 'pending' && item.ci === 'pass') lines.push(`${name}: CI passed`)
     if (was.ci !== 'fail' && item.ci === 'fail') lines.push(`${name}: CI failed (${item.failed.join(', ')})`)
     if (was.rabbit !== 'pass' && item.rabbit === 'pass') {

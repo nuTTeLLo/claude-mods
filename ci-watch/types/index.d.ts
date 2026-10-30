@@ -17,6 +17,21 @@ export type Item = {
   hasRabbit: boolean
   /** Unresolved review threads CodeRabbit opened. */
   threads: number
+  /** Set on a recently merged PR, in a repo that records deployments, while its deploy is followed. */
+  merged?: { oid: string; at: string; deploy: Deploy }
+}
+
+/** `queued`: merged, no deploy that includes it has started yet. */
+export type DeployState = 'queued' | 'running' | 'done' | 'fail'
+
+export type Deploy = {
+  state: DeployState
+  /** The environment watched, e.g. `production`. */
+  env: string
+  /** When the deploy that shipped the PR finished, as an ISO time. */
+  at?: string
+  /** The deploy's log, an Actions job page for an Actions deploy. */
+  url?: string
 }
 
 export type Snapshot = {

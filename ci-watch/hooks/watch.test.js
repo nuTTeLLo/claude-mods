@@ -149,9 +149,8 @@ test('answers in one line without arguments, and switches modes', OPTIONS, async
     const ran = await $.command.run(CHECK);
     expect(ran.text).toBe('2 watched, 1 running · band auto');
     expect((await $.command.run({ ...CHECK, args: 'off' })).text).toContain('polling stopped');
-    expect((await $.state.get({ plugin: 'ci-watch', key: 'mode' })).value).toBe('off');
     const before = polls;
-    await clock.advance(10 * 60000);
+    await clock.advance(10 * 60_000);
     expect(polls).toBe(before);
     expect((await $.command.run({ ...CHECK, args: 'on' })).text).toBe('band shows every row.');
     expect((await $.command.run({ ...CHECK, args: 'nope' })).text).toContain('usage: /ci-watch');

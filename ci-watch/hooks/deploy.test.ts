@@ -7,6 +7,7 @@ const merged = (number: number) => ({
   repo: { owner: 'acme', name: 'web' },
   number,
   label: `#${number} fix-${number}`,
+  head: `fix-${number}`,
   url: `https://example.test/${number}`,
   oid: `m${number}`,
   at: '2026-10-30T02:00:00Z',
@@ -69,6 +70,7 @@ test('follows a merged PR until its deploy finishes, then toasts the time', OPTI
         ),
       )
     }
+    if (e.argv[0] === 'git') return ok('main\n')
     expect(e.argv).toEqual(['gh', 'api', 'repos/acme/web/actions/runs/100'])
 
     return ok(JSON.stringify(state))
@@ -190,14 +192,16 @@ test('keeps a PR deployed hours ago today', OPTIONS, async ($, on) => {
   expect((ran.text ?? '').includes('web #520 fix-520  merged  deployed to production')).toBe(isToday)
 })
 
-test('the band shows every row under on, and only what needs attention under auto', () => {
+test('under on the band shows every row on the watched branch, else the checked-out branch and the watched one, and only what needs attention under auto', () => {
   const branch = { ...mergedItem(merged(1), { state: 'done', env: 'production' }), id: 'web@main', label: 'main', isPr: false, merged: undefined, ci: 'pass' as const }
   const done = mergedItem(merged(2), { state: 'done', env: 'production', at: '2026-10-30T03:00:00Z' })
   const running = mergedItem(merged(3), { state: 'running', env: 'production' })
   const items = [done, running, branch]
 
-  expect(bandRows(items, 'on')).toEqual(items)
-  expect(bandRows(items, 'auto')).toEqual([running])
+  expect(bandRows(items, 'on', 'fix-2')).toEqual([done, branch])
+  expect(bandRows(items, 'on', 'main')).toEqual(items)
+  expect(bandRows(items, 'on', null)).toEqual(items)
+  expect(bandRows(items, 'auto', 'fix-2')).toEqual([running])
   expect(bandRows(items, 'off')).toEqual([])
 })
 

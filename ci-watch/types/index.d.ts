@@ -6,6 +6,8 @@ export type Item = {
   repo: string
   label: string
   isPr: boolean
+  /** A PR's head branch, open or merged. */
+  head?: string
   url?: string
   sha: string
   ci: Check
@@ -38,9 +40,11 @@ export type Snapshot = {
   items: Item[]
   error: string | null
   checkedAt: number
+  /** The branch checked out where the session runs, when there is one. */
+  branch?: string | null
 }
 
-/** `auto` shows only rows that need attention, `on` every row, `off` nothing and stops polling. */
+/** `auto` shows only rows that need attention, `on` every row on the watched branch, else the checked-out branch's PRs and the watched branch, `off` nothing and stops polling. */
 export type Mode = 'auto' | 'on' | 'off'
 
 declare module 'claude-code' {

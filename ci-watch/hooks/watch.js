@@ -84,6 +84,7 @@ export function parseMerged(repos, data) {
                 repo,
                 number: pull.number,
                 label: `#${pull.number} ${pull.headRefName}`,
+                head: pull.headRefName,
                 url: pull.url,
                 oid,
                 at: pull.mergedAt,
@@ -100,6 +101,7 @@ export function mergedItem(pull, deploy) {
         repo: pull.repo.name,
         label: pull.label,
         isPr: true,
+        head: pull.head,
         url: pull.url,
         sha: pull.oid,
         ci: 'none',
@@ -165,6 +167,7 @@ export function parse(repos, data) {
                 repo: repo.name,
                 label: `#${pull.number} ${pull.headRefName}`,
                 isPr: true,
+                head: pull.headRefName,
                 url: pull.url,
                 ...rollup(pull.commits?.nodes?.[0]?.commit),
                 hasRabbit,
@@ -200,11 +203,19 @@ export function needsAttention(item) {
         return item.merged.deploy.state !== 'done';
     return isPending(item) || item.ci === 'fail' || item.rabbit === 'fail' || item.threads > 0;
 }
-/** The band's rows: every one under `on`, those that need attention under `auto`. */
-export function bandRows(items, mode) {
+/**
+ * The band's rows: those that need attention under `auto`; under `on`, every row while a watched
+ * branch (or no branch) is checked out, else just that branch's PRs (open or merged) and the
+ * watched branches.
+ */
+export function bandRows(items, mode, branch = null) {
     if (mode === 'off')
         return [];
-    return mode === 'on' ? [...items] : items.filter(isShown).filter(needsAttention);
+    if (mode === 'auto')
+        return items.filter(isShown).filter(needsAttention);
+    if (branch === null || items.some(item => !item.isPr && item.label === branch))
+        return [...items];
+    return items.filter(item => !item.isPr || item.head === branch);
 }
 /** One line counting the rows, for `/ci-watch` without arguments. */
 export function summary(items) {

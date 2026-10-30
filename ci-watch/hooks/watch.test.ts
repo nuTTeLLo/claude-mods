@@ -44,6 +44,7 @@ test('reports CI and CodeRabbit progress, then toasts when they settle', OPTIONS
   let body = answer([run('IN_PROGRESS', null), rabbit('PENDING')], [])
   const toasts: string[] = []
   on('process.run', (_$, e) => {
+    if (e.argv[0] === 'git') return ok('feature\n')
     expect(e.argv.slice(0, 3)).toEqual(['gh', 'api', 'graphql'])
     expect(e.argv[4]).toContain('r0: repository(owner: "acme", name: "web")')
     expect(e.argv[4]).toContain('ref(qualifiedName: "refs/heads/release")')
@@ -178,6 +179,6 @@ test('answers in one line without arguments, and switches modes', OPTIONS, async
   await clock.advance(10 * 60_000)
   expect(polls).toBe(before)
 
-  expect((await $.command.run({ ...CHECK, args: 'on' })).text).toBe('band shows every row.')
+  expect((await $.command.run({ ...CHECK, args: 'on' })).text).toBe("band shows this branch's PRs and the watched branch.")
   expect((await $.command.run({ ...CHECK, args: 'nope' })).text).toContain('usage: /ci-watch')
 })

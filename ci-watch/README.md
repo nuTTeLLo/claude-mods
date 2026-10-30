@@ -44,8 +44,11 @@ Two options, set in `/config` or on the install screen.
   (per session, `auto` to start):
   - `auto`: only rows that need you: CI running or failed, CodeRabbit still reviewing,
     or review comments open. Gone once everything is green.
-  - `on`: every row: each open PR, each PR merged lately, and the watched branch,
-    green or not.
+  - `on`: with the watched branch (or no branch) checked out where the session runs,
+    every row: each open PR, each PR merged lately, and the watched branch, green or
+    not. On any other branch, only that branch's PR (open, or merged while its deploy
+    is followed) and the watched branch. Under jj, the nearest bookmark on `@` or its
+    ancestors counts as the branch.
   - `off`: no band, no polling, no toasts, until you switch it back on.
 - **CI**: a 10-cell bar and `finished/total` checks on the latest commit; `✓` when all
   passed, `✗ <check names>` on failure. Yellow pending, green pass, red fail.

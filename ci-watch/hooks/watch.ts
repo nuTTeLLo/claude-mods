@@ -125,6 +125,7 @@ export type Merged = {
   repo: Repo
   number: number
   label: string
+  head: string
   url: string
   oid: string
   at: string
@@ -148,6 +149,7 @@ export function parseMerged(repos: readonly Repo[], data: Record<string, RepoDat
         repo,
         number: pull.number,
         label: `#${pull.number} ${pull.headRefName}`,
+        head: pull.headRefName,
         url: pull.url,
         oid,
         at: pull.mergedAt,
@@ -166,6 +168,7 @@ export function mergedItem(pull: Merged, deploy: Deploy): Item {
     repo: pull.repo.name,
     label: pull.label,
     isPr: true,
+    head: pull.head,
     url: pull.url,
     sha: pull.oid,
     ci: 'none',
@@ -236,6 +239,7 @@ export function parse(repos: readonly Repo[], data: Record<string, RepoData>): I
         repo: repo.name,
         label: `#${pull.number} ${pull.headRefName}`,
         isPr: true,
+        head: pull.headRefName,
         url: pull.url,
         ...rollup(pull.commits?.nodes?.[0]?.commit),
         hasRabbit,
@@ -275,11 +279,17 @@ export function needsAttention(item: Item): boolean {
   return isPending(item) || item.ci === 'fail' || item.rabbit === 'fail' || item.threads > 0
 }
 
-/** The band's rows: every one under `on`, those that need attention under `auto`. */
-export function bandRows(items: readonly Item[], mode: Mode): Item[] {
+/**
+ * The band's rows: those that need attention under `auto`; under `on`, every row while a watched
+ * branch (or no branch) is checked out, else just that branch's PRs (open or merged) and the
+ * watched branches.
+ */
+export function bandRows(items: readonly Item[], mode: Mode, branch: string | null = null): Item[] {
   if (mode === 'off') return []
+  if (mode === 'auto') return items.filter(isShown).filter(needsAttention)
+  if (branch === null || items.some(item => !item.isPr && item.label === branch)) return [...items]
 
-  return mode === 'on' ? [...items] : items.filter(isShown).filter(needsAttention)
+  return items.filter(item => !item.isPr || item.head === branch)
 }
 
 /** One line counting the rows, for `/ci-watch` without arguments. */

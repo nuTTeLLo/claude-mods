@@ -6,7 +6,7 @@ const ACTIVE_MS = 20_000;
 const IDLE_MS = 5 * 60_000;
 // How long after a push to keep polling fast, while GitHub registers the checks.
 const HOT_MS = 10 * 60_000;
-const EMPTY = { items: [], error: null, checkedAt: 0 };
+const EMPTY = { items: [], error: null, checkedAt: 0, branch: null };
 const snapshot = atom({ plugin: 'ci-watch', key: 'snapshot' }, EMPTY);
 const mode = atom({ plugin: 'ci-watch', key: 'mode' }, 'auto');
 const MODES = ['auto', 'on', 'off'];
@@ -123,8 +123,31 @@ async function currentRepo($) {
     }
     return null;
 }
+/** The branch checked out in the session's directory: git's, or outside a git checkout, the bookmark on jj's `@` or `@-`. */
+async function currentBranch($) {
+    const asks = [
+        ['git', 'branch', '--show-current'],
+        ['jj', 'log', '--no-graph', '-r', 'heads(::@ & bookmarks())', '-T', 'local_bookmarks.map(|b| b.name()).join("\\n") ++ "\\n"'],
+    ];
+    for (const argv of asks) {
+        try {
+            const ran = await $.process.run(argv);
+            const name = ran.stdout.split('\n')[0]?.trim() ?? '';
+            if (ran.exitCode === 0 && name !== '')
+                return name;
+            // A git checkout on a detached HEAD has no branch; jj won't know better.
+            if (ran.exitCode === 0)
+                return null;
+        }
+        catch {
+            // Not installed: try the next one.
+        }
+    }
+    return null;
+}
 async function poll($) {
     const now = await $.clock.now();
+    const branch = await currentBranch($);
     let items = [];
     let error = null;
     try {
@@ -148,7 +171,7 @@ async function poll($) {
     }
     const before = await read($, snapshot);
     // A failed poll keeps the last good rows on screen beside the error.
-    const taken = { items: error === null ? items : before.items, error, checkedAt: now };
+    const taken = { items: error === null ? items : before.items, error, checkedAt: now, branch };
     await update($, snapshot, () => taken);
     if (error === null) {
         for (const line of changes(before.items, items))
@@ -190,7 +213,7 @@ export const register = (on, options) => {
                 return { text: 'band off, polling stopped; /ci-watch auto turns it back on.' };
             nextAt = 0;
             await tick($);
-            return { text: chosen === 'on' ? 'band shows every row.' : 'band shows only rows that need attention.' };
+            return { text: chosen === 'on' ? 'band shows this branch\'s PRs and the watched branch.' : 'band shows only rows that need attention.' };
         }
         if (arg !== '' && arg !== 'list')
             return { text: USAGE };
@@ -218,7 +241,8 @@ export const register = (on, options) => {
     on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
         const chosen = await read($, mode);
         const taken = await read($, snapshot);
-        const rows = bandRows(taken.items, chosen);
+        // A snapshot stored before `branch` existed has none.
+        const rows = bandRows(taken.items, chosen, taken.branch ?? null);
         if (chosen === 'off' || e.props.hasSurvey || (rows.length === 0 && taken.error === null)) {
             return next(e);
         }
